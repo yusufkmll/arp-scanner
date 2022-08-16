@@ -67,7 +67,7 @@ char *allocate_strmem (int); //* memory allocation - malloc + memset
 uint8_t *allocate_ustrmem (int); //* memory allocation - malloc + memset
 unsigned short checksum(void *b, int len); //* req for icmp pack
 int send_arp(char *target, char *srcc_ip); //* send arp to dedicated ip
-int send_ping_icmp(char *srcc_ip); //* send icmp pack (ping)
+int send_ping_icmp(char *target_ip, struct timeval tv); //* send icmp pack (ping)
 int read_file(ips_t *ips); //* read ip and subnet mask from file
 int find_ip(char *buff); //* find this device's IP address
 char **alloc_string(int item, int maxchar);
@@ -78,7 +78,7 @@ int ips_get_string(char *ips, uint32_t ip_u32);
 void *rcv_arp(void *data); //* receive arp requests
 void *scan_ip(void *data); //* scan devices
 
-atomic_bool is_found = 0;
+int is_found = 0;
 
 int main() {
     
@@ -117,10 +117,10 @@ void *scan_ip(void *data) {
 
     struct timespec begin, end;
     clock_gettime(CLOCK_REALTIME, &begin);
-    while(sweep_ip_u < max_sweep_ip || is_found != 0)
+    while(sweep_ip_u < max_sweep_ip && is_found == 0)
     {
         ips_get_string(sweep_ip_c, sweep_ip_u);
-        // debug("ip swept: %s", sweep_ip_c);
+        debug("ip swept: %s", sweep_ip_c);
         send_arp(sweep_ip_c, ips->src_ip);
         sweep_ip_u++;
     }
@@ -183,7 +183,7 @@ unsigned short checksum(void *b, int len) {
     return result;
 }
 
-int send_ping_icmp(char *target_ip) {
+int send_ping_icmp(char *target_ip, struct timeval tv) {
     struct ping_pkt pckt;   
     int sockfd, alen;
     struct sockaddr_in con_addr, rec_addr;
@@ -203,10 +203,15 @@ int send_ping_icmp(char *target_ip) {
     {
         pckt.msg[i] = i;
     }
+
     pckt.hdr.type = ICMP_ECHO;
     pckt.hdr.un.echo.id = getpid(); //* echo here
     pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
     pckt.hdr.un.echo.sequence = 1;
+
+    if(setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        perror("Errorrrr");
+    }
 
     int res = sendto(sockfd, &pckt, sizeof(pckt),
      0, (struct sockaddr*)&con_addr, alen);
@@ -292,8 +297,9 @@ void* rcv_arp(void *data) {
         printf ("%02x:", arphdr->sender_mac[i]);
     }
     printf ("%02x\n", arphdr->sender_mac[5]);
-    printf ("Sender protocol (IPv4) address: %u.%u.%u.%u\n",
-        arphdr->sender_ip[0], arphdr->sender_ip[1], arphdr->sender_ip[2], arphdr->sender_ip[3]);
+    char senderipv4[100];
+    sprintf(senderipv4, "%u.%u.%u.%u", arphdr->sender_ip[0], arphdr->sender_ip[1], arphdr->sender_ip[2], arphdr->sender_ip[3]);
+    printf ("Sender protocol (IPv4) address: %s\n", senderipv4);
     printf ("Target (this node) hardware (MAC) address: ");
     for (i=0; i<5; i++) {
         printf ("%02x:", arphdr->target_mac[i]);
@@ -301,7 +307,12 @@ void* rcv_arp(void *data) {
     printf ("%02x\n", arphdr->target_mac[5]);
     printf ("Target (this node) protocol (IPv4) address: %u.%u.%u.%u\n",
         arphdr->target_ip[0], arphdr->target_ip[1], arphdr->target_ip[2], arphdr->target_ip[3]);
-    
+
+    struct timeval tt;
+    tt.tv_sec = 5;
+    tt.tv_usec = 0;
+    send_ping_icmp(senderipv4, tt);
+
     free (ether_frame);
     
     return 0;
@@ -326,7 +337,7 @@ int send_arp(char *targett, char *srcc_ip) {
     src_ip = allocate_strmem (INET_ADDRSTRLEN);
     
     // Interface to send packet through.
-    strcpy (interface, "eth0");
+    strcpy (interface, "wlo1");
     
     // Submit request for a socket descriptor to look up interface.
     if ((sd = socket (AF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
@@ -346,7 +357,7 @@ int send_arp(char *targett, char *srcc_ip) {
     
     // Copy source MAC address.
     memcpy (src_mac, ifr.ifr_hwaddr.sa_data, 6 * sizeof (uint8_t));
-    
+
     //* hardcode
     // sscanf("00:15:5d:81:42:20", "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",&src_mac[0], &src_mac[1], &src_mac[2],&src_mac[3], &src_mac[4], &src_mac[5] );
 
@@ -457,6 +468,7 @@ int send_arp(char *targett, char *srcc_ip) {
         exit (EXIT_FAILURE);
     }
     
+
     // Send ethernet frame to socket.
     if ((bytes = sendto (sd, ether_frame, frame_length, 0, (struct sockaddr *) &device, sizeof (device))) <= 0) {
         perror ("sendto() failed");
@@ -473,8 +485,6 @@ int send_arp(char *targett, char *srcc_ip) {
     free (interface);
     free (target);
     free (src_ip);
-
-    exit(EXIT_SUCCESS);
 
     return 0;
 }
