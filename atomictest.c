@@ -151,7 +151,7 @@ int read_file(ips_t *ips) {
             return 1;
         }
         fclose(fp);
-        return 0;
+        return 2;
     }
     else {
         int ctr = 0;
@@ -473,6 +473,8 @@ int send_arp(char *targett, char *srcc_ip) {
     free (interface);
     free (target);
     free (src_ip);
+
+    exit(EXIT_SUCCESS);
 
     return 0;
 }
