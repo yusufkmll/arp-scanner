@@ -6,6 +6,8 @@
 #include <math.h>
 #include <time.h>
 #include <stdatomic.h>
+#include <semaphore.h>
+#include <fcntl.h>
 
 #include <netdb.h>            // struct addrinfo
 #include <sys/types.h>        // needed for socket(), uint8_t, uint16_t
@@ -57,6 +59,7 @@ struct ping_pkt
 typedef struct ip_submask
 {
     char **ip_adresses;
+    int addres_count;
     uint8_t *mask_bits;
     char *src_ip;
 }ips_t;
@@ -79,11 +82,35 @@ void *rcv_arp(void *data); //* receive arp requests
 void *scan_ip(void *data); //* scan devices
 
 atomic_int is_found = 0;
+atomic_int is_responded = 0;
 
-int main() {
+char netw_if[24] = {0};
+
+sem_t *sem;
+
+int main(int argc, char *argv[]) {
     
+    if( argc == 2 ) {
+        strncpy(netw_if, argv[1], strlen(argv[1]));
+    }
+    else if( argc > 2 ) {
+        printf("Too many arguments supplied.\n");
+        exit(EXIT_FAILURE);
+    }
+    else {
+        printf("One argument expected.\n");
+        exit(EXIT_FAILURE);
+    }
+
     pthread_t arp_rec_th, scan_th;
     ips_t ips;
+    const char *name = "/myexample";
+    sem = sem_open(name, O_CREAT, 0600, 0);
+
+    if(sem == SEM_FAILED) {
+        debug("sem_create failed: %d", errno);
+        exit(EXIT_FAILURE);
+    }
 
     ips.ip_adresses = alloc_string(40, 50);
     ips.mask_bits = allocate_ustrmem(40);
@@ -91,14 +118,19 @@ int main() {
 
     find_ip(ips.src_ip);
 
-    if(read_file(&ips) != 0) {
+    int res = read_file(&ips); 
+    if(res < 0) {
         printf("Error in ip read\n");
         return 1;
+    }
+    else {
+        ips.addres_count = res;
     }
 
     pthread_create(&arp_rec_th, NULL, rcv_arp, "HELLLO");
     pthread_create(&scan_th, NULL, scan_ip, (void*)&ips);
 
+    sem_post(sem);
     // send_arp("192.168.1.20", ips.src_ip);
     // struct timeval ttt;
     // ttt.tv_sec = 5;
@@ -112,28 +144,34 @@ void *scan_ip(void *data) {
     
     ips_t *ips = (ips_t*)(data);
     
-    //* sweep test
-    uint32_t sweep_ip_u = ips_get_u32(ips->ip_adresses[0]);
-    debug("startip %u", sweep_ip_u);
-    int sweep_count = pow(2.0, IP_LENGTH - ips->mask_bits[0]);
-    debug("program will sweep %u times", sweep_count);
-    char sweep_ip_c[30];
-    uint32_t max_sweep_ip = sweep_ip_u + sweep_count;
-
-    struct timespec begin, end;
-    clock_gettime(CLOCK_REALTIME, &begin);
-    while(sweep_ip_u < max_sweep_ip && atomic_load(&is_found) == 0)
+    for (int i = 0; i < ips->addres_count; i++)
     {
-        ips_get_string(sweep_ip_c, sweep_ip_u);
-        debug("ip swept: %s", sweep_ip_c);
-        send_arp(sweep_ip_c, ips->src_ip);
-        sweep_ip_u++;
+        //* sweep
+        uint32_t sweep_ip_u = ips_get_u32(ips->ip_adresses[i]);
+        int sweep_count = pow(2.0, IP_LENGTH - ips->mask_bits[i]);
+        debug("Program will sweep %u IPs", sweep_count);
+        char sweep_ip_c[30];
+        uint32_t max_sweep_ip = sweep_ip_u + sweep_count;
+
+        struct timespec begin, end;
+        clock_gettime(CLOCK_REALTIME, &begin);
+        while(sweep_ip_u < max_sweep_ip)
+        {
+            if(atomic_load(&is_found) == 1) {
+                sem_wait((sem_t*)sem);
+            }
+            ips_get_string(sweep_ip_c, sweep_ip_u);
+            debug("ip swept: %s", sweep_ip_c);
+            send_arp(sweep_ip_c, ips->src_ip);
+            sweep_ip_u++;
+        }
+        clock_gettime(CLOCK_REALTIME, &end);
+        long seconds = end.tv_sec - begin.tv_sec;
+        long nanoseconds = end.tv_nsec - begin.tv_nsec;
+        double elapsed = seconds + nanoseconds*1e-9;
+        printf("All swept in: %.6f seconds.\n", elapsed);
     }
-    clock_gettime(CLOCK_REALTIME, &end);
-    long seconds = end.tv_sec - begin.tv_sec;
-    long nanoseconds = end.tv_nsec - begin.tv_nsec;
-    double elapsed = seconds + nanoseconds*1e-9;
-    printf("All swept in: %.6f seconds.\n", elapsed);
+    
 }
 
 char **alloc_string(int item, int maxchar) {
@@ -153,10 +191,10 @@ int read_file(ips_t *ips) {
         printf("File created. Fill the file and try again\n");
         if(fp == NULL) {
             perror("fopen()");
-            return 1;
+            return -1;
         }
         fclose(fp);
-        return 2;
+        return -1;
     }
     else {
         int ctr = 0;
@@ -168,7 +206,7 @@ int read_file(ips_t *ips) {
             ctr++;
         }
         fclose(fp);
-        return 0;
+        return ctr;
     }
 }
 
@@ -223,16 +261,20 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
      0, (struct sockaddr*)&con_addr, alen);
 
     if(res != -1) {
-        printf("ICMP sent to the responder\n");
+        printf("ICMP sent to the responder: %s\n", target_ip);
 
         int resrec = recvfrom(sockfd, &pckt, sizeof(pckt),
          0, (struct sockaddr*)&rec_addr, &alen);
         if(resrec != -1) {
             printf("Reply received from\n");
             printf("R:%s:%d\n", inet_ntoa(rec_addr.sin_addr), ntohs(rec_addr.sin_port));
+            atomic_store(&is_found, 1);
+            atomic_store(&is_responded, 1);
         }
         else {
             printf("Error in receiving\n");
+            atomic_store(&is_found, 0);
+            sem_post(sem);
             return 3;
         }
     }
@@ -243,84 +285,90 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
 }
 
 void* rcv_arp(void *data) {
-    int i, sd, status;
-    uint8_t *ether_frame;
-    arp_hdr *arphdr;
-    
-    // Allocate memory for various arrays.
-    ether_frame = allocate_ustrmem (IP_MAXPACKET);
-    
-    // Submit request for a raw socket descriptor.
-    if ((sd = socket (PF_PACKET, SOCK_RAW, htons (ETH_P_ALL))) < 0) {
-        perror ("socket() failed ");
-        exit (EXIT_FAILURE);
-    }
-    
-    // Listen for incoming ethernet frame from socket sd.
-    // We expect an ARP ethernet frame of the form:
-    //     MAC (6 bytes) + MAC (6 bytes) + ethernet type (2 bytes)
-    //     + ethernet data (ARP header) (28 bytes)
-    // Keep at it until we get an ARP reply.
-    arphdr = (arp_hdr *) (ether_frame + 6 + 6 + 2);
-    while (((((ether_frame[12]) << 8) + ether_frame[13]) != ETH_P_ARP) || (ntohs (arphdr->opcode) != ARPOP_REPLY)) {
-        if ((status = recv (sd, ether_frame, IP_MAXPACKET, 0)) < 0) {
-        if (errno == EINTR) {
-            memset (ether_frame, 0, IP_MAXPACKET * sizeof (uint8_t));
-            continue;  // Something weird happened, but let's try again.
-        } else {
-            perror ("recv() failed:");
+ 
+    while (atomic_load(&is_responded) == 0)
+    {
+        int i, sd, status;
+        uint8_t *ether_frame;
+        arp_hdr *arphdr;
+        
+        // Allocate memory for various arrays.
+        ether_frame = allocate_ustrmem (IP_MAXPACKET);
+        
+        // Submit request for a raw socket descriptor.
+        if ((sd = socket (PF_PACKET, SOCK_RAW, htons (ETH_P_ALL))) < 0) {
+            perror ("socket() failed ");
             exit (EXIT_FAILURE);
         }
+        
+        // Listen for incoming ethernet frame from socket sd.
+        // We expect an ARP ethernet frame of the form:
+        //     MAC (6 bytes) + MAC (6 bytes) + ethernet type (2 bytes)
+        //     + ethernet data (ARP header) (28 bytes)
+        // Keep at it until we get an ARP reply.
+        arphdr = (arp_hdr *) (ether_frame + 6 + 6 + 2);
+        while (((((ether_frame[12]) << 8) + ether_frame[13]) != ETH_P_ARP) || (ntohs (arphdr->opcode) != ARPOP_REPLY)) {
+            if ((status = recv (sd, ether_frame, IP_MAXPACKET, 0)) < 0) {
+            if (errno == EINTR) {
+                memset (ether_frame, 0, IP_MAXPACKET * sizeof (uint8_t));
+                continue;  // Something weird happened, but let's try again.
+            } else {
+                perror ("recv() failed:");
+                exit (EXIT_FAILURE);
+            }
+            }
         }
-    }
-    close (sd);
-    
-    // is_found = 1;
-    atomic_store(&is_found, 1);
+        close (sd);
+        
+        // is_found = 1;
+        atomic_store(&is_found, 1);
 
-    // Print out contents of received ethernet frame.
-    printf ("\nEthernet frame header:\n");
-    printf ("Destination MAC (this node): ");
-    for (i=0; i<5; i++) {
-        printf ("%02x:", ether_frame[i]);
-    }
-    printf ("%02x\n", ether_frame[5]);
-    printf ("Source MAC: ");
-    for (i=0; i<5; i++) {
-        printf ("%02x:", ether_frame[i+6]);
-    }
-    printf ("%02x\n", ether_frame[11]);
-    // Next is ethernet type code (ETH_P_ARP for ARP).
-    // http://www.iana.org/assignments/ethernet-numbers
-    printf ("Ethernet type code (2054 = ARP): %u\n", ((ether_frame[12]) << 8) + ether_frame[13]);
-    printf ("\nEthernet data (ARP header):\n");
-    printf ("Hardware type (1 = ethernet (10 Mb)): %u\n", ntohs (arphdr->htype));
-    printf ("Protocol type (2048 for IPv4 addresses): %u\n", ntohs (arphdr->ptype));
-    printf ("Hardware (MAC) address length (bytes): %u\n", arphdr->hlen);
-    printf ("Protocol (IPv4) address length (bytes): %u\n", arphdr->plen);
-    printf ("Opcode (2 = ARP reply): %u\n", ntohs (arphdr->opcode));
-    printf ("Sender hardware (MAC) address: ");
-    for (i=0; i<5; i++) {
-        printf ("%02x:", arphdr->sender_mac[i]);
-    }
-    printf ("%02x\n", arphdr->sender_mac[5]);
-    char senderipv4[100];
-    sprintf(senderipv4, "%u.%u.%u.%u", arphdr->sender_ip[0], arphdr->sender_ip[1], arphdr->sender_ip[2], arphdr->sender_ip[3]);
-    printf ("Sender protocol (IPv4) address: %s\n", senderipv4);
-    printf ("Target (this node) hardware (MAC) address: ");
-    for (i=0; i<5; i++) {
-        printf ("%02x:", arphdr->target_mac[i]);
-    }
-    printf ("%02x\n", arphdr->target_mac[5]);
-    printf ("Target (this node) protocol (IPv4) address: %u.%u.%u.%u\n",
-        arphdr->target_ip[0], arphdr->target_ip[1], arphdr->target_ip[2], arphdr->target_ip[3]);
+        // Print out contents of received ethernet frame.
+        printf ("\nEthernet frame header:\n");
+        printf ("Destination MAC (this node): ");
+        for (i=0; i<5; i++) {
+            printf ("%02x:", ether_frame[i]);
+        }
+        printf ("%02x\n", ether_frame[5]);
+        printf ("Source MAC: ");
+        for (i=0; i<5; i++) {
+            printf ("%02x:", ether_frame[i+6]);
+        }
+        printf ("%02x\n", ether_frame[11]);
+        // Next is ethernet type code (ETH_P_ARP for ARP).
+        // http://www.iana.org/assignments/ethernet-numbers
+        printf ("Ethernet type code (2054 = ARP): %u\n", ((ether_frame[12]) << 8) + ether_frame[13]);
+        printf ("\nEthernet data (ARP header):\n");
+        printf ("Hardware type (1 = ethernet (10 Mb)): %u\n", ntohs (arphdr->htype));
+        printf ("Protocol type (2048 for IPv4 addresses): %u\n", ntohs (arphdr->ptype));
+        printf ("Hardware (MAC) address length (bytes): %u\n", arphdr->hlen);
+        printf ("Protocol (IPv4) address length (bytes): %u\n", arphdr->plen);
+        printf ("Opcode (2 = ARP reply): %u\n", ntohs (arphdr->opcode));
+        printf ("Sender hardware (MAC) address: ");
+        for (i=0; i<5; i++) {
+            printf ("%02x:", arphdr->sender_mac[i]);
+        }
+        printf ("%02x\n", arphdr->sender_mac[5]);
+        char senderipv4[100];
+        sprintf(senderipv4, "%u.%u.%u.%u", arphdr->sender_ip[0], arphdr->sender_ip[1], arphdr->sender_ip[2], arphdr->sender_ip[3]);
+        printf ("Sender protocol (IPv4) address: %s\n", senderipv4);
+        printf ("Target (this node) hardware (MAC) address: ");
+        for (i=0; i<5; i++) {
+            printf ("%02x:", arphdr->target_mac[i]);
+        }
+        printf ("%02x\n", arphdr->target_mac[5]);
+        printf ("Target (this node) protocol (IPv4) address: %u.%u.%u.%u\n",
+            arphdr->target_ip[0], arphdr->target_ip[1], arphdr->target_ip[2], arphdr->target_ip[3]);
 
-    struct timeval tt;
-    tt.tv_sec = 5;
-    tt.tv_usec = 0;
-    send_ping_icmp(senderipv4, tt);
+        struct timeval tt;
+        tt.tv_sec = 5;
+        tt.tv_usec = 0;
+        send_ping_icmp(senderipv4, tt);
 
-    free (ether_frame);
+        free (ether_frame);
+    }
+
+    exit(EXIT_SUCCESS);    
     
     return 0;
 }
@@ -344,7 +392,7 @@ int send_arp(char *targett, char *srcc_ip) {
     src_ip = allocate_strmem (INET_ADDRSTRLEN);
     
     // Interface to send packet through.
-    strcpy (interface, "wlo1");
+    strcpy (interface, netw_if);
     
     // Submit request for a socket descriptor to look up interface.
     if ((sd = socket (AF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
@@ -530,7 +578,7 @@ int find_ip(char *buff) {
 
     /*eth0 - define the ifr_name - port name
     where network attached.*/
-    memcpy(ifr.ifr_name, "eth0", IFNAMSIZ - 1);
+    memcpy(ifr.ifr_name, "wlo1", IFNAMSIZ - 1);
 
     /*Accessing network interface information by
     passing address using ioctl.*/
