@@ -31,7 +31,7 @@
 #define ARP_HDRLEN      28      // ARP header length
 #define ARPOP_REQUEST   1       // Taken from <linux/if_arp.h>
 #define ARPOP_REPLY     2       // Taken from <linux/if_arp.h>
-#define PING_SIZE       64      // Ping packet length
+#define PING_SIZE       56      // Ping packet length
 #define IP_LENGTH       32      // Ping packet length
 
 typedef struct _arp_hdr arp_hdr;
@@ -78,7 +78,7 @@ int ips_get_string(char *ips, uint32_t ip_u32);
 void *rcv_arp(void *data); //* receive arp requests
 void *scan_ip(void *data); //* scan devices
 
-int is_found = 0;
+atomic_int is_found = 0;
 
 int main() {
     
@@ -99,6 +99,11 @@ int main() {
     pthread_create(&arp_rec_th, NULL, rcv_arp, "HELLLO");
     pthread_create(&scan_th, NULL, scan_ip, (void*)&ips);
 
+    // send_arp("192.168.1.20", ips.src_ip);
+    // struct timeval ttt;
+    // ttt.tv_sec = 5;
+    // ttt.tv_usec = 0;
+    // send_ping_icmp("192.168.1.1", ttt);
     
     pause();
 }
@@ -117,7 +122,7 @@ void *scan_ip(void *data) {
 
     struct timespec begin, end;
     clock_gettime(CLOCK_REALTIME, &begin);
-    while(sweep_ip_u < max_sweep_ip && is_found == 0)
+    while(sweep_ip_u < max_sweep_ip && atomic_load(&is_found) == 0)
     {
         ips_get_string(sweep_ip_c, sweep_ip_u);
         debug("ip swept: %s", sweep_ip_c);
@@ -184,6 +189,7 @@ unsigned short checksum(void *b, int len) {
 }
 
 int send_ping_icmp(char *target_ip, struct timeval tv) {
+
     struct ping_pkt pckt;   
     int sockfd, alen;
     struct sockaddr_in con_addr, rec_addr;
@@ -206,8 +212,8 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
 
     pckt.hdr.type = ICMP_ECHO;
     pckt.hdr.un.echo.id = getpid(); //* echo here
-    pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
     pckt.hdr.un.echo.sequence = 1;
+    pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
 
     if(setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         perror("Errorrrr");
@@ -217,12 +223,12 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
      0, (struct sockaddr*)&con_addr, alen);
 
     if(res != -1) {
-        printf("SENT\n");
+        printf("ICMP sent to the responder\n");
 
         int resrec = recvfrom(sockfd, &pckt, sizeof(pckt),
          0, (struct sockaddr*)&rec_addr, &alen);
         if(resrec != -1) {
-            printf("RECEIVED\n");
+            printf("Reply received from\n");
             printf("R:%s:%d\n", inet_ntoa(rec_addr.sin_addr), ntohs(rec_addr.sin_port));
         }
         else {
@@ -269,7 +275,8 @@ void* rcv_arp(void *data) {
     }
     close (sd);
     
-    is_found = 1;
+    // is_found = 1;
+    atomic_store(&is_found, 1);
 
     // Print out contents of received ethernet frame.
     printf ("\nEthernet frame header:\n");
