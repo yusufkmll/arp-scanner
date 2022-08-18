@@ -72,6 +72,7 @@ int send_arp(char *target, char *srcc_ip); //* send arp to dedicated ip
 int send_ping_icmp(char *target_ip, struct timeval tv); //* send icmp pack (ping)
 int read_file(ips_t *ips); //* read ip and subnet mask from file
 int find_ip(char *buff); //* find this device's IP address
+int config_user_ip(char *new_ip, char *submask);
 char **alloc_string(int item, int maxchar);
 uint32_t ips_get_u32(char *ips);
 int ips_get_string(char *ips, uint32_t ip_u32);
@@ -595,6 +596,52 @@ int find_ip(char *buff) {
 
     printf("System IP Address is: %s\n", buff);
     
+    return 0;
+}
+
+int config_user_ip(char *new_ip, char *submask) {
+    int sockfd;
+    struct ifreq ifr;
+    struct sockaddr_in inet_addr, subnet_mask;
+
+    bzero(ifr.ifr_name, IFNAMSIZ);
+    bzero((char*)&ifr.ifr_addr, IFNAMSIZ);
+    bzero((char*)&ifr.ifr_netmask, IFNAMSIZ);
+
+    //todo ismi argdan
+    strncpy(ifr.ifr_name, netw_if, strlen(netw_if));
+
+    inet_addr.sin_family = AF_INET;
+    inet_pton(AF_INET, new_ip, &(inet_addr.sin_addr));
+
+    subnet_mask.sin_family = AF_INET;
+    inet_pton(AF_INET, submask, &(subnet_mask.sin_addr));
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if(sockfd < 0) {
+        perror("Error in socket()");
+        exit(EXIT_FAILURE);
+    }
+
+    //* set ip address;
+    memcpy(&(ifr.ifr_addr), &inet_addr, sizeof (struct sockaddr));
+    if(ioctl(sockfd ,SIOCSIFADDR, &ifr) < 0) {
+        perror("Error in ioctl() for IP");
+        exit(EXIT_FAILURE);
+    }
+
+    //* set submask
+    memcpy(&(ifr.ifr_addr), &subnet_mask, sizeof (struct sockaddr));
+    if(ioctl(sockfd ,SIOCSIFNETMASK, &ifr) < 0) {
+        perror("Error in ioctl() for submask");
+        exit(EXIT_FAILURE);
+    }
+
+    //todo fill in the blanks
+    debug("IP on %s changed to %s", netw_if, new_ip);
+
+    close(sockfd);
+
     return 0;
 }
 
