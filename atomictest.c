@@ -22,7 +22,6 @@
 #include <linux/if_packet.h>  // struct sockaddr_ll (see man 7 packet)
 #include <net/ethernet.h>
 #include <netinet/ip_icmp.h>
-
 #include <errno.h>            // errno, perror()
 
 #define debug(format, ...) printf(format "\n", __VA_ARGS__)
@@ -89,7 +88,7 @@ char netw_if[24] = {0};
 sem_t *sem;
 
 int main(int argc, char *argv[]) {
-    
+
     if( argc == 2 ) {
         strncpy(netw_if, argv[1], strlen(argv[1]));
     }
@@ -236,6 +235,9 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
     // con_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); //*ping local
     inet_pton(AF_INET, target_ip, &(con_addr.sin_addr));
 
+    //* CHECKSUM PATLATAN BU
+    bzero(&pckt, sizeof(pckt));
+
     sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if(sockfd < 0) {
         perror("socket()");
@@ -252,6 +254,8 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
     pckt.hdr.un.echo.id = getpid(); //* echo here
     pckt.hdr.un.echo.sequence = 1;
     pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
+
+    printf("//////\n%ld\n////////", sizeof(pckt));
 
     if(setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         perror("Errorrrr");
@@ -409,7 +413,7 @@ int send_arp(char *targett, char *srcc_ip) {
         return (EXIT_FAILURE);
     }
     close (sd);
-    
+    printf("**********************\n%d\n****************\n", ifr.ifr_ifindex);
     // Copy source MAC address.
     memcpy (src_mac, ifr.ifr_hwaddr.sa_data, 6 * sizeof (uint8_t));
 
