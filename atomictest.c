@@ -35,6 +35,7 @@
 #define PING_SIZE       56      // Ping packet length
 #define IP_LENGTH       32      // Ping packet length
 
+//* ARP package structure
 typedef struct _arp_hdr arp_hdr;
 struct _arp_hdr {
     uint16_t htype;
@@ -48,13 +49,15 @@ struct _arp_hdr {
     uint8_t target_ip[4];
 };
 
-// ping packet structure
+//* Ping packet structure
 struct ping_pkt
 {
     struct icmphdr hdr;
     char msg[PING_SIZE-sizeof(struct icmphdr)];
 };
 
+//* IP scanner structre
+//? Arguements required for scanner thread
 typedef struct ip_submask
 {
     char **ip_adresses;
@@ -72,24 +75,31 @@ int send_arp(char *target, char *srcc_ip); //* send arp to dedicated ip
 int send_ping_icmp(char *target_ip, struct timeval tv); //* send icmp pack (ping)
 int read_file(ips_t *ips); //* read ip and subnet mask from file
 int find_ip(char *buff); //* find this device's IP address
-int config_user_ip(char *new_ip, char *submask);
-char **alloc_string(int item, int maxchar);
-uint32_t ips_get_u32(char *ips);
-int ips_get_string(char *ips, uint32_t ip_u32);
+int config_user_ip(char *new_ip, char *submask); //* change user ip
+char **alloc_string(int item, int maxchar); //* allocate memory for array of strings
+uint32_t ips_get_u32(char *ips); //* convert IPv4 string to uint32_t var
+int ips_get_string(char *ips, uint32_t ip_u32); //* convert uint32_t var to IPv4 string
 
 //. Threads
-void *rcv_arp(void *data); //* receive arp requests
-void *scan_ip(void *data); //* scan devices
+void *rcv_arp(void *data);      //* receive arp requests
+void *scan_ip(void *data);      //* scan devices
 
+//. arp request recevied, wait for ICMP response
 atomic_int is_found = 0;
+
+//. receive IP messages until receive the 
+//. ICMP response from ARP reply sender 
 atomic_int is_responded = 0;
 
+//. network interface string
 char netw_if[24] = {0};
 
+//. semaphore for scanning function
 sem_t *sem;
 
 int main(int argc, char *argv[]) {
 
+    //* interface name required as an argument
     if( argc == 2 ) {
         strncpy(netw_if, argv[1], strlen(argv[1]));
     }
@@ -102,9 +112,13 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    //. receiver and scanner thread handlers
     pthread_t arp_rec_th, scan_th;
-    ips_t ips;
-    const char *name = "/myexample";
+    ips_t ips; //. IP scanner structure
+    const char *name = "/myexample"; //. semaphore name
+    
+    //* scanner will wait this semaphore
+    //* if any ARP reply receive
     sem = sem_open(name, O_CREAT, 0600, 0);
 
     if(sem == SEM_FAILED) {
@@ -112,14 +126,16 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    //. allocate memory for ips variables
     ips.ip_adresses = alloc_string(40, 50);
     ips.mask_bits = allocate_ustrmem(40);
     ips.src_ip = allocate_strmem(30);
 
-    //! UNUTMA
-    // find_ip(ips.src_ip);
-    strncpy(ips.src_ip, "192.168.5.11", strlen("192.168.5.11"));
+    //! BU FONKSIYON HATALI
+    find_ip(ips.src_ip);
+    // strncpy(ips.src_ip, "192.168.5.11", strlen("192.168.5.11"));
 
+    //* read IPv4 addreses in CIDR notation
     int res = read_file(&ips); 
     if(res < 0) {
         printf("Error in ip read\n");
@@ -129,16 +145,13 @@ int main(int argc, char *argv[]) {
         ips.addres_count = res;
     }
 
+    //* create required threads 
     pthread_create(&arp_rec_th, NULL, rcv_arp, "HELLLO");
     pthread_create(&scan_th, NULL, scan_ip, (void*)&ips);
 
+    //* scan until ARP reply receives
     sem_post(sem);
-    // send_arp("192.168.1.20", ips.src_ip);
-    // struct timeval ttt;
-    // ttt.tv_sec = 5;
-    // ttt.tv_usec = 0;
-    // send_ping_icmp("192.168.1.1", ttt);
-    
+
     pause();
 }
 
@@ -146,26 +159,31 @@ void *scan_ip(void *data) {
     
     ips_t *ips = (ips_t*)(data);
 
+    //* Get uint32 value of source IP address
     uint32_t src_ip_u32 = ips_get_u32(ips->src_ip);
 
+    //* sweep all IP addreses in the struct
     for (int i = 0; i < ips->addres_count; i++)
     {
-        //* sweep
-        uint32_t sweep_ip_u = ips_get_u32(ips->ip_adresses[i]) + 1; //.min
+        uint32_t sweep_ip_u = ips_get_u32(ips->ip_adresses[i]) + 1; //. min ip value
         int sweep_count = pow(2.0, IP_LENGTH - ips->mask_bits[i]) - 2; //* 0-255 discarded
-        uint32_t max_sweep_ip = sweep_ip_u + sweep_count;
+        uint32_t max_sweep_ip = sweep_ip_u + sweep_count; //. max ip value
 
+        //* if IP not in the interval, change IP 
         if(src_ip_u32 < sweep_ip_u || src_ip_u32 >= max_sweep_ip) {
             //! IP CHANGE NEEDED
             printf("src: %u\nmin: %u\nmax: %u\n", src_ip_u32, sweep_ip_u, max_sweep_ip);
             char neww_ip[24]; ips_get_string(neww_ip, max_sweep_ip - 1);
             printf("IP needs to change to: %s\n", neww_ip);
+            
+            //* if interface is wireless, do not change IP
             if(strstr(netw_if, "wlo1") != NULL) {
                 printf("IP change too risky in this network\n");
                 printf("Program will be terminated\n");
             }
             else {
                 char submask[24];
+                //* extract mask var from sweep count
                 uint32_t mask_u = (0xffffffff - sweep_count) - 1;
                 ips_get_string(submask, mask_u);
                 config_user_ip(neww_ip, submask);
@@ -178,13 +196,16 @@ void *scan_ip(void *data) {
         char sweep_ip_c[30]; //* arp buffer
         debug("Program will sweep %u IPs", sweep_count);
 
+        //. start timer
         struct timespec begin, end;
         clock_gettime(CLOCK_REALTIME, &begin);
         while(sweep_ip_u < max_sweep_ip)
         {
+            //. if ARP reply receive, wait for semaphore
             if(atomic_load(&is_found) == 1) {
                 sem_wait((sem_t*)sem);
             }
+            //. do not sweep source IP
             if(sweep_ip_u == src_ip_u32) {
                 //! NOT SWEEP SOURCE IP
                 sweep_ip_u++;
@@ -201,7 +222,8 @@ void *scan_ip(void *data) {
         double elapsed = seconds + nanoseconds*1e-9;
         printf("All swept in: %.6f seconds.\n", elapsed);
 
-        //. change ip and try remaining ip
+        //* if any response is received, sweep source ip
+        //. change ip and sweep the remaining ip
         if(strstr(netw_if, "wlo1") != NULL) {
             printf("IP change too risky in this network\n");
             printf("Program will be terminated\n");
@@ -235,6 +257,7 @@ int read_file(ips_t *ips) {
     FILE *fp;
     fp = fopen("./config.txt", "r+");
     if(fp == NULL) {
+        //* if file not exist, create new and exit
         fp = fopen("./config.txt", "w");
         printf("File created. Fill the file and try again\n");
         if(fp == NULL) {
@@ -252,6 +275,10 @@ int read_file(ips_t *ips) {
             sscanf(ret + 1, "%d", (int*)&(ips->mask_bits[ctr])); //* find int after slash
             *ret = 0; //* NULL TERMINATE TO HOLD IP
             ctr++;
+        }
+        if(ctr == 0) {
+            printf("File is empty\n");
+            return - 1;
         }
         fclose(fp);
         return ctr;
@@ -305,7 +332,7 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
     pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
 
     if(setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        perror("Errorrrr");
+        perror("Error in setsockopt for timeout param of ICMP pack");
     }
 
     int res = sendto(sockfd, &pckt, sizeof(pckt),
