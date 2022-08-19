@@ -1,29 +1,29 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>           // close()
-#include <string.h>           // strcpy, memset(), and memcpy()
-#include <pthread.h>
-#include <math.h>
-#include <time.h>
-#include <stdatomic.h>
-#include <semaphore.h>
-#include <fcntl.h>
+#include <stdio.h>              // printf()
+#include <stdlib.h>             // malloc()
+#include <unistd.h>             // close()
+#include <string.h>             // strcpy, memset(), and memcpy()
+#include <pthread.h>            // thread operations
+#include <math.h>               // pow()
+#include <time.h>               // sweep time measurement
+#include <stdatomic.h>          // atomic flags
+#include <semaphore.h>          // to pause and resume scan function
+#include <fcntl.h>              // O_CREAT
 
-#include <netdb.h>            // struct addrinfo
-#include <sys/types.h>        // needed for socket(), uint8_t, uint16_t
-#include <sys/socket.h>       // needed for socket()
-#include <netinet/in.h>       // IPPROTO_RAW, INET_ADDRSTRLEN
-#include <netinet/ip.h>       // IP_MAXPACKET (which is 65535)
-#include <arpa/inet.h>        // inet_pton() and inet_ntop()
-#include <sys/ioctl.h>        // macro ioctl is defined
-#include <bits/ioctls.h>      // defines values for argument "request" of ioctl.
-#include <net/if.h>           // struct ifreq
-#include <linux/if_ether.h>   // ETH_P_ARP = 0x0806
-#include <linux/if_packet.h>  // struct sockaddr_ll (see man 7 packet)
-#include <net/ethernet.h>
-#include <netinet/ip_icmp.h>
-#include <errno.h>            // errno, perror()
+#include <netdb.h>              // struct addrinfo
+#include <sys/types.h>          // needed for socket(), uint8_t, uint16_t
+#include <sys/socket.h>         // needed for socket()
+#include <netinet/in.h>         // IPPROTO_RAW, INET_ADDRSTRLEN
+#include <netinet/ip.h>         // IP_MAXPACKET (which is 65535)
+#include <arpa/inet.h>          // inet_pton() and inet_ntop()
+#include <sys/ioctl.h>          // macro ioctl is defined
+#include <bits/ioctls.h>        // defines values for argument "request" of ioctl.
+#include <net/if.h>             // struct ifreq
+#include <linux/if_ether.h>     // ETH_P_ARP = 0x0806
+#include <linux/if_packet.h>    // struct sockaddr_ll (see man 7 packet)
+#include <netinet/ip_icmp.h>    // ICMP ping request
+#include <errno.h>              // errno, perror()
 
+//* printf with arguements and newline
 #define debug(format, ...) printf(format "\n", __VA_ARGS__)
 
 // Define some constants.
@@ -116,7 +116,9 @@ int main(int argc, char *argv[]) {
     ips.mask_bits = allocate_ustrmem(40);
     ips.src_ip = allocate_strmem(30);
 
-    find_ip(ips.src_ip);
+    //! UNUTMA
+    // find_ip(ips.src_ip);
+    strncpy(ips.src_ip, "192.168.5.11", strlen("192.168.5.11"));
 
     int res = read_file(&ips); 
     if(res < 0) {
@@ -143,15 +145,38 @@ int main(int argc, char *argv[]) {
 void *scan_ip(void *data) {
     
     ips_t *ips = (ips_t*)(data);
-    
+
+    uint32_t src_ip_u32 = ips_get_u32(ips->src_ip);
+
     for (int i = 0; i < ips->addres_count; i++)
     {
         //* sweep
-        uint32_t sweep_ip_u = ips_get_u32(ips->ip_adresses[i]);
-        int sweep_count = pow(2.0, IP_LENGTH - ips->mask_bits[i]);
-        debug("Program will sweep %u IPs", sweep_count);
-        char sweep_ip_c[30];
+        uint32_t sweep_ip_u = ips_get_u32(ips->ip_adresses[i]) + 1; //.min
+        int sweep_count = pow(2.0, IP_LENGTH - ips->mask_bits[i]) - 2; //* 0-255 discarded
         uint32_t max_sweep_ip = sweep_ip_u + sweep_count;
+
+        if(src_ip_u32 < sweep_ip_u || src_ip_u32 >= max_sweep_ip) {
+            //! IP CHANGE NEEDED
+            printf("src: %u\nmin: %u\nmax: %u\n", src_ip_u32, sweep_ip_u, max_sweep_ip);
+            char neww_ip[24]; ips_get_string(neww_ip, max_sweep_ip - 1);
+            printf("IP needs to change to: %s\n", neww_ip);
+            if(strstr(netw_if, "wlo1") != NULL) {
+                printf("IP change too risky in this network\n");
+                printf("Program will be terminated\n");
+            }
+            else {
+                char submask[24];
+                uint32_t mask_u = (0xffffffff - sweep_count) - 1;
+                ips_get_string(submask, mask_u);
+                config_user_ip(neww_ip, submask);
+                memset(ips->src_ip, 0, 30);
+                strncpy(ips->src_ip, neww_ip, strlen(neww_ip));
+                src_ip_u32 = ips_get_u32(ips->src_ip);
+            }
+        }
+
+        char sweep_ip_c[30]; //* arp buffer
+        debug("Program will sweep %u IPs", sweep_count);
 
         struct timespec begin, end;
         clock_gettime(CLOCK_REALTIME, &begin);
@@ -159,6 +184,11 @@ void *scan_ip(void *data) {
         {
             if(atomic_load(&is_found) == 1) {
                 sem_wait((sem_t*)sem);
+            }
+            if(sweep_ip_u == src_ip_u32) {
+                //! NOT SWEEP SOURCE IP
+                sweep_ip_u++;
+                continue;
             }
             ips_get_string(sweep_ip_c, sweep_ip_u);
             debug("ip swept: %s", sweep_ip_c);
@@ -170,6 +200,24 @@ void *scan_ip(void *data) {
         long nanoseconds = end.tv_nsec - begin.tv_nsec;
         double elapsed = seconds + nanoseconds*1e-9;
         printf("All swept in: %.6f seconds.\n", elapsed);
+
+        //. change ip and try remaining ip
+        if(strstr(netw_if, "wlo1") != NULL) {
+            printf("IP change too risky in this network\n");
+            printf("Program will be terminated\n");
+        }
+        else {
+            char new_ip[24] = { 0 }, submaskk[24] = { 0 };
+            ips_get_string(new_ip, max_sweep_ip - 2); //* olmaz bu        
+            //* sweep count = total size of unmasked area - 2
+            uint32_t mask_u = 0xffffffff - sweep_count - 1;
+            ips_get_string(submaskk, mask_u);
+            config_user_ip(new_ip, submaskk);
+            send_arp(ips->src_ip, new_ip);
+            debug("ip swept: %s", ips->src_ip);
+            memset(ips->src_ip, 0, 30);
+            strncpy(ips->src_ip, new_ip, strlen(new_ip));
+        }
     }
     
 }
@@ -255,8 +303,6 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
     pckt.hdr.un.echo.id = getpid(); //* echo here
     pckt.hdr.un.echo.sequence = 1;
     pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
-
-    printf("//////\n%ld\n////////", sizeof(pckt));
 
     if(setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         perror("Errorrrr");
@@ -414,7 +460,6 @@ int send_arp(char *targett, char *srcc_ip) {
         return (EXIT_FAILURE);
     }
     close (sd);
-    printf("**********************\n%d\n****************\n", ifr.ifr_ifindex);
     // Copy source MAC address.
     memcpy (src_mac, ifr.ifr_hwaddr.sa_data, 6 * sizeof (uint8_t));
 
@@ -637,7 +682,6 @@ int config_user_ip(char *new_ip, char *submask) {
         exit(EXIT_FAILURE);
     }
 
-    //todo fill in the blanks
     debug("IP on %s changed to %s", netw_if, new_ip);
 
     close(sockfd);
