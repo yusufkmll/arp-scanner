@@ -255,17 +255,11 @@ char **alloc_string(int item, int maxchar) {
 
 int read_file(ips_t *ips) {
     FILE *fp;
-    fp = fopen("./config.txt", "r+");
+    fp = fopen("/etc/arpscanner.conf", "r+");
     if(fp == NULL) {
-        //* if file not exist, create new and exit
-        fp = fopen("./config.txt", "w");
-        printf("File created. Fill the file and try again\n");
-        if(fp == NULL) {
-            perror("fopen()");
-            return -1;
-        }
-        fclose(fp);
-        return -1;
+        //* if file not exist, tell user to run "sudo make config"
+        printf("config file is missing, run \"sudo make config\" to create");
+        exit(EXIT_FAILURE);
     }
     else {
         int ctr = 0;
@@ -655,7 +649,7 @@ int find_ip(char *buff) {
 
     /*eth0 - define the ifr_name - port name
     where network attached.*/
-    memcpy(ifr.ifr_name, "wlo1", IFNAMSIZ - 1);
+    memcpy(ifr.ifr_name, netw_if, IFNAMSIZ - 1);
 
     /*Accessing network interface information by
     passing address using ioctl.*/
