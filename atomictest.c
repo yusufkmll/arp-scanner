@@ -207,7 +207,6 @@ void *scan_ip(void *data) {
             }
             //. do not sweep source IP
             if(sweep_ip_u == src_ip_u32) {
-                //! NOT SWEEP SOURCE IP
                 sweep_ip_u++;
                 continue;
             }
@@ -219,14 +218,16 @@ void *scan_ip(void *data) {
         clock_gettime(CLOCK_REALTIME, &end);
         long seconds = end.tv_sec - begin.tv_sec;
         long nanoseconds = end.tv_nsec - begin.tv_nsec;
-        double elapsed = seconds + nanoseconds*1e-9;
+        double elapsed = seconds + nanoseconds * 1e-9;
         printf("All swept in: %.6f seconds.\n", elapsed);
 
         //* if any response is received, sweep source ip
         //. change ip and sweep the remaining ip
+        //! if network is wireless, do not change IP
         if(strstr(netw_if, "wlo1") != NULL) {
             printf("IP change too risky in this network\n");
-            printf("Program will be terminated\n");
+            // printf("Program will be terminated\n");
+            //todo determine what to do next
         }
         else {
             char new_ip[24] = { 0 }, submaskk[24] = { 0 };
@@ -237,6 +238,7 @@ void *scan_ip(void *data) {
             config_user_ip(new_ip, submaskk);
             send_arp(ips->src_ip, new_ip);
             debug("ip swept: %s", ips->src_ip);
+            //. change ip address in ips struct
             memset(ips->src_ip, 0, 30);
             strncpy(ips->src_ip, new_ip, strlen(new_ip));
         }
@@ -305,7 +307,7 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
     // con_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); //*ping local
     inet_pton(AF_INET, target_ip, &(con_addr.sin_addr));
 
-    //* CHECKSUM PATLATAN BU
+    //. to calculate checksum correctly
     bzero(&pckt, sizeof(pckt));
 
     sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
@@ -325,6 +327,7 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
     pckt.hdr.un.echo.sequence = 1;
     pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
 
+    //. Pass timeout option to socket
     if(setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         perror("Error in setsockopt for timeout param of ICMP pack");
     }
@@ -342,6 +345,7 @@ int send_ping_icmp(char *target_ip, struct timeval tv) {
             printf("R:%s:%d\n", inet_ntoa(rec_addr.sin_addr), ntohs(rec_addr.sin_port));
             atomic_store(&is_found, 1);
             atomic_store(&is_responded, 1);
+            return 0;
         }
         else {
             printf("Error in receiving\n");
@@ -432,6 +436,8 @@ void* rcv_arp(void *data) {
         printf ("Target (this node) protocol (IPv4) address: %u.%u.%u.%u\n",
             arphdr->target_ip[0], arphdr->target_ip[1], arphdr->target_ip[2], arphdr->target_ip[3]);
 
+        //. send ICMP to ARP responder
+        //. set timeout to 5 seconds
         struct timeval tt;
         tt.tv_sec = 5;
         tt.tv_usec = 0;
@@ -484,11 +490,10 @@ int send_arp(char *targett, char *srcc_ip) {
     // Copy source MAC address.
     memcpy (src_mac, ifr.ifr_hwaddr.sa_data, 6 * sizeof (uint8_t));
 
-    //* hardcode
+    //* to hardcode MAC address
     // sscanf("00:15:5d:81:42:20", "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",&src_mac[0], &src_mac[1], &src_mac[2],&src_mac[3], &src_mac[4], &src_mac[5] );
 
-    // Report source MAC address to stdout.
-    //todo printf ("MAC address for interface %s is ", interface);
+    // to report source MAC address to stdout.
     // for (i=0; i<5; i++) {
     //     printf ("%02x:", src_mac[i]);
     // }
@@ -501,17 +506,15 @@ int send_arp(char *targett, char *srcc_ip) {
         perror ("if_nametoindex() failed to obtain interface index ");
         exit (EXIT_FAILURE);
     }
-    //todo printf ("Index for interface %s is %i\n", interface, device.sll_ifindex);
     
-    //* Set destination MAC address: broadcast address
+    //* Set destination MAC address: broadcast address 
+    //. (ff.ff.ff.ff.ff.ff)
     memset (dst_mac, 0xff, 6 * sizeof (uint8_t));
 
-    // Read from file
-    // Source IPv4 address:  you need to fill this out
+    // source IPv4 address from argument
     strcpy (src_ip, srcc_ip);
     
-    // Read from file
-    // Destination URL or IPv4 address (must be a link-local node): you need to fill this out
+    // destination URL or IPv4 address from argument
     strcpy (target, targett);
     
     // Fill out hints for getaddrinfo().
@@ -744,6 +747,7 @@ uint32_t ips_get_u32(char *ips) {
 int ips_get_string(char *ips, uint32_t ip_u32) {
     uint8_t *ptr = (uint8_t*)&ip_u32;
     // debug("result: %d.%d.%d.%d", *(ptr + 3), *(ptr + 2), *(ptr + 1), *ptr);
+    //? NULL check may be added for preventing unsafe code
     sprintf(ips, "%d.%d.%d.%d", *(ptr + 3), *(ptr + 2), *(ptr + 1), *ptr);
     return 0;
 }
