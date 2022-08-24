@@ -1,6 +1,6 @@
 # ARP scanner
 
-This program sends ARP requests to all of the IP adresses specified in "config.txt" file in <a href="https://whatismyipaddress.com/cidr">CIDR</a> format.
+This program sends ARP requests to all of the IP adresses specified in "config.txt" file in <a target="_blank" href="https://whatismyipaddress.com/cidr">CIDR</a> format.
 
 💾 To install this program 
 ```bash
