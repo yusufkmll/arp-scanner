@@ -470,7 +470,7 @@ int send_arp(char *targett, char *srcc_ip) {
     src_ip = allocate_strmem (INET_ADDRSTRLEN);
     
     // Interface to send packet through.
-    strcpy (interface, netw_if);
+    strncpy (interface, netw_if, sizeof(netw_if));
     
     // Submit request for a socket descriptor to look up interface.
     if ((sd = socket (AF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
@@ -512,10 +512,10 @@ int send_arp(char *targett, char *srcc_ip) {
     memset (dst_mac, 0xff, 6 * sizeof (uint8_t));
 
     // source IPv4 address from argument
-    strcpy (src_ip, srcc_ip);
+    strncpy (src_ip, srcc_ip, strlen(srcc_ip));
     
     // destination URL or IPv4 address from argument
-    strcpy (target, targett);
+    strncpy (target, targett, strlen(targett));
     
     // Fill out hints for getaddrinfo().
     memset (&hints, 0, sizeof (struct addrinfo));
